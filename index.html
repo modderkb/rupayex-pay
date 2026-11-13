@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Pay ₹499</title>
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+  <style>
+    body { font-family: sans-serif; display:flex; justify-content:center; padding:40px; background:#f4f6f8; }
+    .card { background:#fff; padding:30px; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,.1); text-align:center; max-width:400px; width:100%; }
+    .btn { background:#2563eb; color:#fff; border:none; padding:14px 30px; font-size:16px; border-radius:8px; cursor:pointer; width:100%; }
+    .btn:hover { background:#1e40af; }
+    .btn:disabled { background:#94a3b8; }
+    #qrbox { margin:20px auto; display:flex; justify-content:center; }
+    .error { color:#dc2626; margin-top:10px; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h2>Pay ₹499</h2>
+  <p>Scan QR or click to pay securely</p>
+  <button id="payBtn" class="btn">Pay ₹499</button>
+  <div id="qrbox"></div>
+  <div id="msg" class="error"></div>
+</div>
+
+<script>
+  const payBtn = document.getElementById('payBtn');
+  const qrbox  = document.getElementById('qrbox');
+  const msg    = document.getElementById('msg');
+
+  payBtn.addEventListener('click', async () => {
+    payBtn.disabled = true;
+    payBtn.textContent = 'Generating QR...';
+    qrbox.innerHTML = '';
+    msg.textContent = '';
+
+    try {
+      const res = await fetch('/api/create-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: 499 })
+      });
+      const data = await res.json();
+
+      if (!data.success) throw new Error(data.error || 'Failed');
+
+      if (data.qr_code) {
+        new QRCode(qrbox, { text: data.qr_code, width: 220, height: 220 });
+      } else if (data.payment_url) {
+        new QRCode(qrbox, { text: data.payment_url, width: 220, height: 220 });
+      }
+
+      if (data.payment_url) {
+        setTimeout(() => window.location.href = data.payment_url, 3000);
+      }
+
+      payBtn.textContent = 'QR Generated ✓';
+    } catch (e) {
+      msg.textContent = e.message;
+      payBtn.disabled = false;
+      payBtn.textContent = 'Pay ₹499';
+    }
+  });
+</script>
+</body>
+</html>
