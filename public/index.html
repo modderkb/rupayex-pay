@@ -1,38 +1,117 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Pay ₹499</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Secure Payment - ₹499</title>
   <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
   <style>
-    body { font-family: sans-serif; display:flex; justify-content:center; padding:40px; background:#f4f6f8; }
-    .card { background:#fff; padding:30px; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,.1); text-align:center; max-width:400px; width:100%; }
-    .btn { background:#2563eb; color:#fff; border:none; padding:14px 30px; font-size:16px; border-radius:8px; cursor:pointer; width:100%; }
-    .btn:hover { background:#1e40af; }
-    .btn:disabled { background:#94a3b8; }
-    #qrbox { margin:20px auto; display:flex; justify-content:center; }
-    .error { color:#dc2626; margin-top:10px; }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    body { 
+      display: flex; justify-content: center; align-items: center; min-height: 100vh; 
+      background: linear-gradient(135deg, #f0f4f8 0%, #d9e2ec 100%); padding: 20px; 
+    }
+    .card { 
+      background: #ffffff; padding: 35px 25px; border-radius: 16px; 
+      box-shadow: 0 10px 30px rgba(0,0,0,0.08); text-align: center; 
+      max-width: 400px; width: 100%; position: relative; overflow: hidden;
+    }
+    .card::before {
+      content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 5px;
+      background: linear-gradient(90deg, #2563eb, #3b82f6);
+    }
+    h2 { color: #1e293b; margin-bottom: 8px; font-size: 24px; }
+    .amount { font-size: 32px; font-weight: bold; color: #2563eb; margin-bottom: 5px; }
+    p.subtitle { color: #64748b; font-size: 14px; margin-bottom: 25px; }
+    
+    .btn { 
+      background: #2563eb; color: #fff; border: none; padding: 15px; 
+      font-size: 16px; font-weight: 600; border-radius: 8px; cursor: pointer; 
+      width: 100%; transition: background 0.3s; display: flex; justify-content: center; align-items: center;
+    }
+    .btn:hover { background: #1d4ed8; }
+    .btn:disabled { background: #94a3b8; cursor: not-allowed; }
+    
+    /* Loader Animation */
+    .loader {
+      border: 3px solid #f3f3f3; border-top: 3px solid #ffffff;
+      border-radius: 50%; width: 20px; height: 20px;
+      animation: spin 1s linear infinite; margin-right: 10px; display: none;
+    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+    /* QR Section */
+    #qrSection { display: none; margin-top: 20px; }
+    #qrbox { 
+      margin: 20px auto; display: flex; justify-content: center; 
+      padding: 15px; border: 2px dashed #cbd5e1; border-radius: 12px; width: fit-content;
+    }
+    .upi-apps { display: flex; justify-content: center; gap: 15px; margin-top: 15px; margin-bottom: 25px;}
+    .upi-apps img { height: 30px; object-fit: contain; }
+    
+    .cancel-btn {
+      background: transparent; color: #ef4444; border: 1px solid #ef4444;
+      padding: 10px; font-size: 14px; font-weight: 600; border-radius: 8px;
+      cursor: pointer; width: 100%; transition: all 0.3s;
+    }
+    .cancel-btn:hover { background: #fef2f2; }
+
+    .error { color: #dc2626; margin-top: 15px; font-size: 14px; font-weight: 500; background: #fef2f2; padding: 10px; border-radius: 6px; border: 1px solid #fecaca; display: none; }
   </style>
 </head>
 <body>
-<div class="card">
-  <h2>Pay ₹499</h2>
-  <p>Scan QR or click to pay securely</p>
-  <button id="payBtn" class="btn">Pay ₹499</button>
-  <div id="qrbox"></div>
-  <div id="msg" class="error"></div>
+
+<div class="card" id="mainCard">
+  <!-- Initial View -->
+  <div id="initialView">
+    <h2>Payment Checkout</h2>
+    <div class="amount">₹499.00</div>
+    <p class="subtitle">Secure payment powered by RuPayX</p>
+    <button id="payBtn" class="btn">
+      <span class="loader" id="btnLoader"></span>
+      <span id="btnText">Pay ₹499 Now</span>
+    </button>
+    <div id="msg" class="error"></div>
+  </div>
+
+  <!-- QR View (Generated) -->
+  <div id="qrSection">
+    <h2>Scan & Pay</h2>
+    <div class="amount">₹499.00</div>
+    <p class="subtitle">Open any UPI App and scan this QR code</p>
+    
+    <div id="qrbox"></div>
+    
+    <div class="upi-apps">
+      <!-- Basic text instead of images to avoid broken links -->
+      <span style="font-size:12px; color:#64748b; background:#f1f5f9; padding:5px 10px; border-radius:20px;">GPay</span>
+      <span style="font-size:12px; color:#64748b; background:#f1f5f9; padding:5px 10px; border-radius:20px;">PhonePe</span>
+      <span style="font-size:12px; color:#64748b; background:#f1f5f9; padding:5px 10px; border-radius:20px;">Paytm</span>
+    </div>
+
+    <button id="cancelBtn" class="cancel-btn">Cancel Payment</button>
+  </div>
 </div>
 
 <script>
   const payBtn = document.getElementById('payBtn');
-  const qrbox  = document.getElementById('qrbox');
-  const msg    = document.getElementById('msg');
+  const btnLoader = document.getElementById('btnLoader');
+  const btnText = document.getElementById('btnText');
+  const msg = document.getElementById('msg');
+  const qrbox = document.getElementById('qrbox');
+  
+  const initialView = document.getElementById('initialView');
+  const qrSection = document.getElementById('qrSection');
+  const cancelBtn = document.getElementById('cancelBtn');
 
+  // Pay Button Click Event
   payBtn.addEventListener('click', async () => {
+    // Show Loading State
     payBtn.disabled = true;
-    payBtn.textContent = 'Generating QR...';
+    btnLoader.style.display = 'inline-block';
+    btnText.textContent = 'Generating QR...';
+    msg.style.display = 'none';
     qrbox.innerHTML = '';
-    msg.textContent = '';
 
     try {
       const res = await fetch('/api/create-order', {
@@ -40,27 +119,49 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ amount: 499 })
       });
+      
       const data = await res.json();
 
-      if (!data.success) throw new Error(data.error || 'Failed');
+      if (!data.success) throw new Error(data.error || 'Failed to create order');
 
-      if (data.qr_code) {
-        new QRCode(qrbox, { text: data.qr_code, width: 220, height: 220 });
-      } else if (data.payment_url) {
-        new QRCode(qrbox, { text: data.payment_url, width: 220, height: 220 });
-      }
+      const qrData = data.qr_code || data.payment_url;
+      if (!qrData) throw new Error('No payment link received');
 
-      if (data.payment_url) {
-        setTimeout(() => window.location.href = data.payment_url, 3000);
-      }
+      // Generate QR Code
+      new QRCode(qrbox, { 
+        text: qrData, 
+        width: 200, 
+        height: 200,
+        colorDark : "#1e293b",
+        colorLight : "#ffffff",
+        correctLevel : QRCode.CorrectLevel.H
+      });
 
-      payBtn.textContent = 'QR Generated ✓';
+      // Switch Views
+      initialView.style.display = 'none';
+      qrSection.style.display = 'block';
+
     } catch (e) {
+      // Error State
       msg.textContent = e.message;
+      msg.style.display = 'block';
       payBtn.disabled = false;
-      payBtn.textContent = 'Pay ₹499';
+      btnLoader.style.display = 'none';
+      btnText.textContent = 'Pay ₹499 Now';
     }
   });
+
+  // Cancel Button Click Event
+  cancelBtn.addEventListener('click', () => {
+    // Reset everything
+    qrSection.style.display = 'none';
+    initialView.style.display = 'block';
+    qrbox.innerHTML = '';
+    payBtn.disabled = false;
+    btnLoader.style.display = 'none';
+    btnText.textContent = 'Pay ₹499 Now';
+  });
 </script>
+
 </body>
 </html>
