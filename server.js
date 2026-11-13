@@ -21,7 +21,7 @@ app.post('/api/create-order', async (req, res) => {
     }
 
     const order_id = 'ORD' + Date.now() + crypto.randomBytes(3).toString('hex');
-    const redirect_url = `${BASE_URL}/payment-callback`;
+    const redirect_url = ${BASE_URL}/payment-callback?redirect_to=https://serverhtml.netlify.app/;
 
     const payload = {
       user_token: USER_TOKEN,
