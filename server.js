@@ -58,15 +58,35 @@ app.post('/api/create-order', async (req, res) => {
 
 // Payment callback
 app.get('/payment-callback', (req, res) => {
-  const { order_id, status } = req.query;
+  const { order_id, status, redirect_to } = req.query;
+  
+  // Agar status success hai, toh 3 second baad redirect karega
+  const isSuccess = (status === 'success' || status === 'SUCCESS' || status === true);
+  const finalRedirect = redirect_to || '/'; 
+  
   res.send(`
-    <html><body style="font-family:sans-serif;text-align:center;padding:50px">
-      <h1>${status === 'success' ? '✅ Payment Successful' : '⏳ Payment ' + (status || 'pending')}</h1>
-      <p>Order ID: ${order_id}</p>
-      <a href="/">Back to Home</a>
-    </body></html>
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; padding: 50px 20px; background: #05050a; color: #fff; }
+        .box { background: #0f172a; padding: 40px; border-radius: 20px; max-width: 400px; margin: auto; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        h1 { font-size: 24px; margin-bottom: 10px; color: ${isSuccess ? '#4ade80' : '#f87171'}; }
+        p { color: #94a3b8; font-size: 14px; margin-bottom: 20px; }
+        .btn { background: linear-gradient(90deg, #9333ea, #ec4899); color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; display: inline-block; margin-top: 15px; }
+      </style>
+    </head>
+    <body>
+      <div class="box">
+        <h1>${isSuccess ? '✅ Payment Successful!' : '⏳ Payment ' + (status || 'Pending')}</h1>
+        <p>Order ID: <b>${order_id || 'N/A'}</b></p>
+        ${isSuccess ? `<p>Redirecting you back in 3 seconds...</p>
+        <a href="${finalRedirect}" class="btn">Click here if not redirected</a>
+        <script>setTimeout(() => { window.location.href = "${finalRedirect}"; }, 3000);</script>` 
+        : `<p>Your payment is not completed or pending. Please check your app.</p>`}
+      </div>
+    </body>
+    </html>
   `);
 });
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server on port ${PORT}`));
