@@ -24,7 +24,6 @@ const orderStatus = new Map();
 function extractPaidStatus(data) {
   if (!data) return { paid: false, raw: '' };
 
-  // Possible status field locations
   const candidates = [
     data.status,
     data.result?.status,
@@ -34,6 +33,7 @@ function extractPaidStatus(data) {
     data.order_status,
     data.data?.order_status,
     data.txn_status,
+    data.data?.txn_status,
   ];
 
   for (const c of candidates) {
@@ -55,6 +55,7 @@ app.use((req, res, next) => {
     req.method === 'GET' &&
     !req.path.startsWith('/api') &&
     !req.path.startsWith('/payment-callback') &&
+    !req.path.startsWith('/payment-pending') &&
     !req.path.includes('.')
   ) {
     const paidCookie = req.cookies.paid_order;
@@ -129,29 +130,29 @@ app.post('/api/create-order', async (req, res) => {
 });
 
 // ------------------------------------------------------------
-// Payment callback — hamesha redirect, kabhi blank/HTML nahi
+// Payment callback — pending page ya success redirect, blank kabhi nahi
 // ------------------------------------------------------------
 app.get('/payment-callback', async (req, res) => {
   const { order_id, status } = req.query;
 
-  // order_id missing → seedha success page
+  // order_id missing → pending page par bhejein (blank nahi)
   if (!order_id) {
-    return res.redirect(SUCCESS_REDIRECT);
+    return res.redirect('/payment-pending');
   }
 
-  // Already paid → seedha redirect
+  // Already paid → seedha success redirect
   if (paidOrders.has(order_id)) {
-    return res.redirect(SUCCESS_REDIRECT);
+    return res.redirect(302, SUCCESS_REDIRECT);
   }
 
   let verifiedPaid = false;
-  let rawStatus = '';
+  let rawStatus = 'pending';
 
   try {
     const check = await axios.post(
       `${RUPayX_BASE}/order-status`,
       { user_token: USER_TOKEN, order_id },
-      { headers: { 'Content-Type': 'application/json' }, timeout: 15000 }
+      { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
     );
 
     console.log(
@@ -161,20 +162,20 @@ app.get('/payment-callback', async (req, res) => {
 
     const parsed = extractPaidStatus(check.data);
     verifiedPaid = parsed.paid;
-    rawStatus = parsed.raw;
-    orderStatus.set(order_id, verifiedPaid ? 'paid' : rawStatus || 'pending');
+    rawStatus = parsed.raw || 'pending';
+    orderStatus.set(order_id, verifiedPaid ? 'paid' : rawStatus);
   } catch (err) {
     console.error(
       `[callback] order ${order_id} verify error:`,
       err.response?.data || err.message
     );
-    // Fallback: callback query me success ho toh accept karo
+    // Fallback: query me success ho toh accept karo
     const qs = String(status || '').toLowerCase();
     verifiedPaid = ['success', 'paid', 'completed'].includes(qs);
-    rawStatus = qs || 'verify_failed';
+    rawStatus = qs || 'pending';
   }
 
-  // Extra safety: agar verify fail ho gaya lekin query me success signal hai
+  // Extra safety: query me success signal ho toh bhi accept
   if (!verifiedPaid) {
     const qs = String(status || '').toLowerCase();
     if (['success', 'paid', 'completed'].includes(qs)) {
@@ -194,12 +195,27 @@ app.get('/payment-callback', async (req, res) => {
       // secure: true  // HTTPS production me enable karo
     });
 
-    // ⬇️ Yahan asli fix — bina HTML, seedha 302 redirect
     return res.redirect(302, SUCCESS_REDIRECT);
   }
 
-  // Agar payment pending/failed hai, tab hi error page dikhao
-  return res.send(`
+  // Pending/Failed → apne pending page par bhejein (blank nahi)
+  return res.redirect(
+    `/payment-pending?order_id=${encodeURIComponent(order_id)}&status=${encodeURIComponent(rawStatus)}`
+  );
+});
+
+// ------------------------------------------------------------
+// Payment pending page — yahan user ko clear message milega
+// ------------------------------------------------------------
+app.get('/payment-pending', (req, res) => {
+  const { order_id, status } = req.query;
+
+  // Agar order actually paid hai (webhook se update ho chuka), toh success par bhejein
+  if (order_id && paidOrders.has(order_id)) {
+    return res.redirect(302, SUCCESS_REDIRECT);
+  }
+
+  res.send(`
     <!DOCTYPE html>
     <html>
     <head>
@@ -215,14 +231,39 @@ app.get('/payment-callback', async (req, res) => {
     </head>
     <body>
       <div class="box">
-        <h1>⏳ Payment ${rawStatus || 'Pending'}</h1>
-        <p>Order ID: <b>${order_id}</b></p>
-        <p>Your payment is not completed. Please try again.</p>
+        <h1>⏳ Payment ${status || 'Pending'}</h1>
+        <p>Order ID: <b>${order_id || 'N/A'}</b></p>
+        <p>Aapka payment abhi complete nahi hua. Thodi der baad check karein ya dobara try karein.</p>
         <a href="/" class="btn">Try Again</a>
       </div>
     </body>
     </html>
   `);
+});
+
+// ------------------------------------------------------------
+// Webhook endpoint (backup — agar user browser band kar de)
+// ------------------------------------------------------------
+app.post('/payment-webhook', (req, res) => {
+  try {
+    const body = req.body || {};
+    console.log('[webhook] received:', JSON.stringify(body));
+
+    const order_id =
+      body.order_id || body.data?.order_id || body.orderId || '';
+    const parsed = extractPaidStatus(body);
+
+    if (order_id && parsed.paid) {
+      paidOrders.add(order_id);
+      orderStatus.set(order_id, 'paid');
+      console.log(`[webhook] order ${order_id} marked as paid`);
+    }
+
+    res.json({ status: 'ok' });
+  } catch (err) {
+    console.error('[webhook] error:', err.message);
+    res.status(500).json({ error: 'webhook error' });
+  }
 });
 
 // ------------------------------------------------------------
