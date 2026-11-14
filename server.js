@@ -16,6 +16,7 @@ const SUCCESS_REDIRECT = 'https://serverhtml.netlify.app/';
 
 const paidOrders = new Set();
 const orderStatus = new Map();
+const orderAmounts = new Map(); // failed retry ke liye amount store karein
 
 // Helper: API response se paid status nikaalein
 function extractPaidStatus(data) {
@@ -99,6 +100,8 @@ app.post('/api/create-order', async (req, res) => {
     }
 
     orderStatus.set(order_id, 'pending');
+    orderAmounts.set(order_id, amt);
+
     res.json({
       success: true,
       order_id,
@@ -118,7 +121,6 @@ app.get('/payment-waiting', (req, res) => {
   const { order_id } = req.query;
   if (!order_id) return res.redirect('/');
 
-  // Agar already paid hai to direct redirect
   if (paidOrders.has(order_id)) {
     return res.redirect(302, SUCCESS_REDIRECT);
   }
@@ -150,7 +152,7 @@ app.get('/payment-waiting', (req, res) => {
       <script>
         const orderId = "${order_id}";
         let attempts = 0;
-        const MAX_ATTEMPTS = 60; // ~3 minutes (3s interval)
+        const MAX_ATTEMPTS = 60;
         
         async function checkStatus() {
           attempts++;
@@ -171,7 +173,6 @@ app.get('/payment-waiting', (req, res) => {
               window.location.href = data.new_payment_url;
               return;
             }
-            // Pending: 3 second baad phir check karein
             setTimeout(checkStatus, 3000);
           } catch (e) {
             setTimeout(checkStatus, 3000);
@@ -215,13 +216,14 @@ app.get('/api/check-status', async (req, res) => {
     }
 
     if (['FAILED', 'CANCELLED', 'EXPIRED'].includes(gw)) {
-      // Failed: naya order banayein
+      // Failed: naya order banayein (same amount)
+      const amt = orderAmounts.get(order_id) || 499;
       const newOrderId = 'ORD' + Date.now() + crypto.randomBytes(3).toString('hex');
       const redirect_url = `${BASE_URL}/payment-callback?order_id=${newOrderId}`;
       
       const payload = {
         user_token: USER_TOKEN,
-        amount: 499, // Ya jo bhi amount ho
+        amount: amt,
         order_id: newOrderId,
         redirect_url,
         remark1: 'Retry Payment',
@@ -234,38 +236,49 @@ app.get('/api/check-status', async (req, res) => {
       
       const paymentUrl = createRes.data?.payment_url || createRes.data?.url || createRes.data?.data?.payment_url;
       if (paymentUrl) {
+        orderStatus.set(newOrderId, 'pending');
+        orderAmounts.set(newOrderId, amt);
         return res.json({ status: 'failed', new_payment_url: paymentUrl });
       }
-      return res.json({ status: 'failed', redirect: '/' }); // Fallback
+      return res.json({ status: 'failed', redirect: '/' });
     }
 
     // Pending: wahi page par wait karein
     res.json({ status: gw.toLowerCase() || 'pending' });
   } catch (err) {
     console.error('Check status error:', err.message);
-    res.json({ status: 'pending' }); // Error par bhi pending maanein, polling jari
+    res.json({ status: 'pending' });
   }
 });
 
 // ------------------------------------------------------------
-// Payment callback (RupayEx yahan bhejta hai)
+// Payment callback (RupayEx POST bhejta hai — JSON body)
 // ------------------------------------------------------------
 app.post('/payment-callback', async (req, res) => {
   const { order_id, status } = req.body || {};
+  
+  console.log(`[callback POST] received:`, JSON.stringify(req.body));
+
   if (!order_id) return res.redirect('/payment-pending');
 
   if (paidOrders.has(order_id)) {
     return res.redirect(302, SUCCESS_REDIRECT);
   }
 
-  // Callback body ka status sirf reference ke liye, API se verify karein
+  // Callback body ka status sirf log ke liye — API se verify karein
+  const callbackStatus = String(status || '').toUpperCase();
+  console.log(`[callback POST] body status: ${callbackStatus} — verifying via API...`);
+
   try {
     const check = await axios.get(`${RUPayX_BASE}/order-status`, {
       params: { user_token: USER_TOKEN, order_id },
       timeout: 10000,
     });
+    
+    console.log(`[callback POST] API response:`, JSON.stringify(check.data));
+    
     const gw = String(
-      check.data?.status ?? check.data?.data?.status ?? ''
+      check.data?.status ?? check.data?.data?.status ?? check.data?.result?.status ?? ''
     ).toUpperCase();
 
     if (['SUCCESS', 'PAID', 'COMPLETED', 'CAPTURED'].includes(gw)) {
@@ -278,6 +291,51 @@ app.post('/payment-callback', async (req, res) => {
     }
     return res.redirect(`/payment-waiting?order_id=${encodeURIComponent(order_id)}`);
   } catch (err) {
+    console.error(`[callback POST] verify error:`, err.message);
+    return res.redirect(`/payment-waiting?order_id=${encodeURIComponent(order_id)}`);
+  }
+});
+
+// ------------------------------------------------------------
+// GET fallback — browser test ya agar gateway GET bheje
+// ------------------------------------------------------------
+app.get('/payment-callback', async (req, res) => {
+  const { order_id, status } = req.query;
+
+  console.log(`[callback GET] received:`, JSON.stringify(req.query));
+
+  if (!order_id) {
+    return res.redirect('/payment-pending');
+  }
+
+  if (paidOrders.has(order_id)) {
+    return res.redirect(302, SUCCESS_REDIRECT);
+  }
+
+  // API se verify karein (query status par trust nahi)
+  try {
+    const check = await axios.get(`${RUPayX_BASE}/order-status`, {
+      params: { user_token: USER_TOKEN, order_id },
+      timeout: 10000,
+    });
+
+    const gw = String(
+      check.data?.status ?? check.data?.data?.status ?? check.data?.result?.status ?? ''
+    ).toUpperCase();
+
+    if (['SUCCESS', 'PAID', 'COMPLETED', 'CAPTURED'].includes(gw)) {
+      paidOrders.add(order_id);
+      orderStatus.set(order_id, 'paid');
+      res.cookie('paid_order', order_id, {
+        httpOnly: true, sameSite: 'lax', maxAge: 365*24*60*60*1000,
+      });
+      return res.redirect(302, SUCCESS_REDIRECT);
+    }
+
+    // Pending/Failed → waiting page par bhejein
+    return res.redirect(`/payment-waiting?order_id=${encodeURIComponent(order_id)}`);
+  } catch (err) {
+    console.error(`[callback GET] verify error:`, err.message);
     return res.redirect(`/payment-waiting?order_id=${encodeURIComponent(order_id)}`);
   }
 });
@@ -301,17 +359,37 @@ app.get('/payment-pending', (req, res) => {
   `);
 });
 
+// ------------------------------------------------------------
 // Webhook backup
+// ------------------------------------------------------------
 app.post('/payment-webhook', (req, res) => {
   const body = req.body || {};
-  const order_id = body.order_id || body.data?.order_id || '';
+  console.log('[webhook] received:', JSON.stringify(body));
+  
+  const order_id = body.order_id || body.data?.order_id || body.orderId || '';
   const parsed = extractPaidStatus(body);
+  
   if (order_id && parsed.paid) {
     paidOrders.add(order_id);
     orderStatus.set(order_id, 'paid');
+    console.log(`[webhook] order ${order_id} marked as paid`);
   }
   res.json({ status: 'ok' });
 });
 
+// ------------------------------------------------------------
+// Debug endpoint
+// ------------------------------------------------------------
+app.get('/api/order-status/:order_id', (req, res) => {
+  const { order_id } = req.params;
+  res.json({
+    order_id,
+    status: orderStatus.get(order_id) || 'unknown',
+    paid: paidOrders.has(order_id),
+  });
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`Server running on ${BASE_URL}`));
+app.listen(PORT, '0.0.0.0', () =>
+  console.log(`Server running on ${BASE_URL}`)
+);
