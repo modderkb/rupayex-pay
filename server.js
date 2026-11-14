@@ -16,7 +16,7 @@ const SUCCESS_REDIRECT = 'https://serverhtml.netlify.app/';
 
 const paidOrders = new Set();
 const orderStatus = new Map();
-const orderAmounts = new Map(); // failed retry ke liye amount store karein
+const orderAmounts = new Map();
 
 // Helper: API response se paid status nikaalein
 function extractPaidStatus(data) {
@@ -115,69 +115,104 @@ app.post('/api/create-order', async (req, res) => {
 });
 
 // ------------------------------------------------------------
-// Waiting page (UTR submit ke baad yahan aayenge, polling karein)
+// Waiting page — UTR submit ke baad yahan aayenge
 // ------------------------------------------------------------
 app.get('/payment-waiting', (req, res) => {
   const { order_id } = req.query;
   if (!order_id) return res.redirect('/');
-
-  if (paidOrders.has(order_id)) {
-    return res.redirect(302, SUCCESS_REDIRECT);
-  }
+  if (paidOrders.has(order_id)) return res.redirect(302, SUCCESS_REDIRECT);
 
   res.send(`
     <!DOCTYPE html>
     <html>
     <head>
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Payment Checking</title>
+      <title>Payment Status</title>
       <style>
         body { font-family: 'Segoe UI', sans-serif; text-align: center; padding: 50px 20px; background: #05050a; color: #fff; margin: 0; }
         .box { background: #0f172a; padding: 40px; border-radius: 20px; max-width: 400px; margin: auto; border: 1px solid rgba(255,255,255,0.1); }
-        h1 { font-size: 22px; margin-bottom: 10px; color: #fbbf24; }
+        h1 { font-size: 22px; margin-bottom: 10px; }
         p { color: #94a3b8; font-size: 14px; }
         .spinner { border: 4px solid rgba(255,255,255,0.1); border-top: 4px solid #9333ea; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .status { font-weight: bold; color: #fbbf24; }
+        .status-pending { color: #fbbf24; }
+        .status-failed { color: #f87171; }
+        .status-success { color: #34d399; }
+        .btn { background: linear-gradient(90deg, #9333ea, #ec4899); color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; display: none; margin-top: 15px; border: none; cursor: pointer; font-size: 14px; }
       </style>
     </head>
     <body>
       <div class="box">
-        <div class="spinner"></div>
-        <h1>⏳ Payment Verify Ho Raha Hai</h1>
+        <div class="spinner" id="spinner"></div>
+        <h1 id="title">⏳ Payment Verify Ho Raha Hai</h1>
         <p>Order ID: <b>${order_id}</b></p>
-        <p>Status: <span class="status" id="status-text">Checking...</span></p>
-        <p>Aapka payment check kiya ja raha hai, please wait...</p>
+        <p>Status: <span id="status-text" class="status-pending">Checking...</span></p>
+        <p id="message">Aapka payment check kiya ja raha hai, please wait...</p>
+        <button id="retry-btn" class="btn" onclick="retryPayment()">Retry Payment</button>
       </div>
       <script>
         const orderId = "${order_id}";
         let attempts = 0;
-        const MAX_ATTEMPTS = 60;
-        
+        const MAX_ATTEMPTS = 100;
+        let isRetrying = false;
+
         async function checkStatus() {
+          if (isRetrying) return;
           attempts++;
           if (attempts > MAX_ATTEMPTS) {
             document.getElementById('status-text').textContent = 'Timeout';
+            document.getElementById('message').textContent = 'Verification timeout. Please refresh the page.';
+            document.getElementById('spinner').style.display = 'none';
             return;
           }
           try {
             const res = await fetch('/api/check-status?order_id=' + encodeURIComponent(orderId));
             const data = await res.json();
-            document.getElementById('status-text').textContent = data.status || 'pending';
+            const statusEl = document.getElementById('status-text');
+            
+            statusEl.textContent = data.status || 'pending';
             
             if (data.redirect) {
+              statusEl.className = 'status-success';
+              document.getElementById('title').textContent = '✅ Payment Success';
+              document.getElementById('message').textContent = 'Redirecting...';
               window.location.href = data.redirect;
               return;
             }
-            if (data.new_payment_url) {
-              window.location.href = data.new_payment_url;
+            
+            if (data.status === 'failed') {
+              statusEl.className = 'status-failed';
+              document.getElementById('title').textContent = '❌ Payment Failed';
+              document.getElementById('message').textContent = 'Payment failed. Please retry.';
+              document.getElementById('spinner').style.display = 'none';
+              document.getElementById('retry-btn').style.display = 'inline-block';
               return;
             }
+            
             setTimeout(checkStatus, 3000);
           } catch (e) {
             setTimeout(checkStatus, 3000);
           }
         }
+
+        async function retryPayment() {
+          isRetrying = true;
+          document.getElementById('retry-btn').disabled = true;
+          document.getElementById('retry-btn').textContent = 'Creating new order...';
+          
+          try {
+            const res = await fetch('/api/retry-payment?order_id=' + encodeURIComponent(orderId));
+            const data = await res.json();
+            if (data.payment_url) {
+              window.location.href = data.payment_url;
+            } else {
+              document.getElementById('message').textContent = 'Retry failed. Please refresh.';
+            }
+          } catch (e) {
+            document.getElementById('message').textContent = 'Retry failed. Please refresh.';
+          }
+        }
+
         checkStatus();
       </script>
     </body>
@@ -186,7 +221,7 @@ app.get('/payment-waiting', (req, res) => {
 });
 
 // ------------------------------------------------------------
-// API: Status check (waiting page se call hoga)
+// Status check API
 // ------------------------------------------------------------
 app.get('/api/check-status', async (req, res) => {
   const { order_id } = req.query;
@@ -215,35 +250,11 @@ app.get('/api/check-status', async (req, res) => {
       return res.json({ status: 'paid', redirect: SUCCESS_REDIRECT });
     }
 
-    if (['FAILED', 'CANCELLED', 'EXPIRED'].includes(gw)) {
-      // Failed: naya order banayein (same amount)
-      const amt = orderAmounts.get(order_id) || 499;
-      const newOrderId = 'ORD' + Date.now() + crypto.randomBytes(3).toString('hex');
-      const redirect_url = `${BASE_URL}/payment-callback?order_id=${newOrderId}`;
-      
-      const payload = {
-        user_token: USER_TOKEN,
-        amount: amt,
-        order_id: newOrderId,
-        redirect_url,
-        remark1: 'Retry Payment',
-      };
-      
-      const createRes = await axios.post(`${RUPayX_BASE}/create-order`, payload, {
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 15000,
-      });
-      
-      const paymentUrl = createRes.data?.payment_url || createRes.data?.url || createRes.data?.data?.payment_url;
-      if (paymentUrl) {
-        orderStatus.set(newOrderId, 'pending');
-        orderAmounts.set(newOrderId, amt);
-        return res.json({ status: 'failed', new_payment_url: paymentUrl });
-      }
-      return res.json({ status: 'failed', redirect: '/' });
+    if (['FAILED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(gw)) {
+      orderStatus.set(order_id, 'failed');
+      return res.json({ status: 'failed' });
     }
 
-    // Pending: wahi page par wait karein
     res.json({ status: gw.toLowerCase() || 'pending' });
   } catch (err) {
     console.error('Check status error:', err.message);
@@ -252,99 +263,74 @@ app.get('/api/check-status', async (req, res) => {
 });
 
 // ------------------------------------------------------------
-// Payment callback (RupayEx POST bhejta hai — JSON body)
+// Retry payment API — naya order banata hai
 // ------------------------------------------------------------
-app.post('/payment-callback', async (req, res) => {
-  const { order_id, status } = req.body || {};
-  
-  console.log(`[callback POST] received:`, JSON.stringify(req.body));
-
-  if (!order_id) return res.redirect('/payment-pending');
-
-  if (paidOrders.has(order_id)) {
-    return res.redirect(302, SUCCESS_REDIRECT);
-  }
-
-  // Callback body ka status sirf log ke liye — API se verify karein
-  const callbackStatus = String(status || '').toUpperCase();
-  console.log(`[callback POST] body status: ${callbackStatus} — verifying via API...`);
+app.get('/api/retry-payment', async (req, res) => {
+  const { order_id } = req.query;
+  if (!order_id) return res.json({ error: 'order_id required' });
 
   try {
-    const check = await axios.get(`${RUPayX_BASE}/order-status`, {
-      params: { user_token: USER_TOKEN, order_id },
-      timeout: 10000,
-    });
-    
-    console.log(`[callback POST] API response:`, JSON.stringify(check.data));
-    
-    const gw = String(
-      check.data?.status ?? check.data?.data?.status ?? check.data?.result?.status ?? ''
-    ).toUpperCase();
+    const amt = orderAmounts.get(order_id) || 499;
+    const newOrderId = 'ORD' + Date.now() + crypto.randomBytes(3).toString('hex');
+    const redirect_url = `${BASE_URL}/payment-callback?order_id=${newOrderId}`;
 
-    if (['SUCCESS', 'PAID', 'COMPLETED', 'CAPTURED'].includes(gw)) {
-      paidOrders.add(order_id);
-      orderStatus.set(order_id, 'paid');
-      res.cookie('paid_order', order_id, {
-        httpOnly: true, sameSite: 'lax', maxAge: 365*24*60*60*1000,
-      });
-      return res.redirect(302, SUCCESS_REDIRECT);
+    const payload = {
+      user_token: USER_TOKEN,
+      amount: amt,
+      order_id: newOrderId,
+      redirect_url,
+      remark1: 'Retry Payment',
+    };
+
+    const createRes = await axios.post(`${RUPayX_BASE}/create-order`, payload, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 15000,
+    });
+
+    const paymentUrl = createRes.data?.payment_url || createRes.data?.url || createRes.data?.data?.payment_url;
+    if (paymentUrl) {
+      orderStatus.set(newOrderId, 'pending');
+      orderAmounts.set(newOrderId, amt);
+      return res.json({ payment_url: paymentUrl });
     }
-    return res.redirect(`/payment-waiting?order_id=${encodeURIComponent(order_id)}`);
+    res.json({ error: 'Could not create new order' });
   } catch (err) {
-    console.error(`[callback POST] verify error:`, err.message);
-    return res.redirect(`/payment-waiting?order_id=${encodeURIComponent(order_id)}`);
+    console.error('Retry payment error:', err.response?.data || err.message);
+    res.json({ error: 'Retry failed' });
   }
 });
 
 // ------------------------------------------------------------
-// GET fallback — browser test ya agar gateway GET bheje
+// Payment callback (RupayEx POST)
 // ------------------------------------------------------------
-app.get('/payment-callback', async (req, res) => {
-  const { order_id, status } = req.query;
+app.post('/payment-callback', async (req, res) => {
+  const { order_id } = req.body || {};
+  console.log(`[callback POST] received:`, JSON.stringify(req.body));
 
+  if (!order_id) return res.redirect('/payment-pending');
+  if (paidOrders.has(order_id)) return res.redirect(302, SUCCESS_REDIRECT);
+
+  return res.redirect(`/payment-waiting?order_id=${encodeURIComponent(order_id)}`);
+});
+
+// ------------------------------------------------------------
+// GET fallback — browser test ya GET callback
+// ------------------------------------------------------------
+app.get('/payment-callback', (req, res) => {
+  const { order_id } = req.query;
   console.log(`[callback GET] received:`, JSON.stringify(req.query));
 
-  if (!order_id) {
-    return res.redirect('/payment-pending');
-  }
+  if (!order_id) return res.redirect('/payment-pending');
+  if (paidOrders.has(order_id)) return res.redirect(302, SUCCESS_REDIRECT);
 
-  if (paidOrders.has(order_id)) {
-    return res.redirect(302, SUCCESS_REDIRECT);
-  }
-
-  // API se verify karein (query status par trust nahi)
-  try {
-    const check = await axios.get(`${RUPayX_BASE}/order-status`, {
-      params: { user_token: USER_TOKEN, order_id },
-      timeout: 10000,
-    });
-
-    const gw = String(
-      check.data?.status ?? check.data?.data?.status ?? check.data?.result?.status ?? ''
-    ).toUpperCase();
-
-    if (['SUCCESS', 'PAID', 'COMPLETED', 'CAPTURED'].includes(gw)) {
-      paidOrders.add(order_id);
-      orderStatus.set(order_id, 'paid');
-      res.cookie('paid_order', order_id, {
-        httpOnly: true, sameSite: 'lax', maxAge: 365*24*60*60*1000,
-      });
-      return res.redirect(302, SUCCESS_REDIRECT);
-    }
-
-    // Pending/Failed → waiting page par bhejein
-    return res.redirect(`/payment-waiting?order_id=${encodeURIComponent(order_id)}`);
-  } catch (err) {
-    console.error(`[callback GET] verify error:`, err.message);
-    return res.redirect(`/payment-waiting?order_id=${encodeURIComponent(order_id)}`);
-  }
+  return res.redirect(`/payment-waiting?order_id=${encodeURIComponent(order_id)}`);
 });
 
 // ------------------------------------------------------------
 // Pending page
 // ------------------------------------------------------------
 app.get('/payment-pending', (req, res) => {
-  const { order_id, status } = req.query;
+  const { order_id } = req.query;
   if (order_id && paidOrders.has(order_id)) {
     return res.redirect(302, SUCCESS_REDIRECT);
   }
@@ -354,7 +340,7 @@ app.get('/payment-pending', (req, res) => {
     <head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Payment Pending</title>
     <style>body{font-family:sans-serif;text-align:center;padding:50px 20px;background:#05050a;color:#fff;margin:0}.box{background:#0f172a;padding:40px;border-radius:20px;max-width:400px;margin:auto}h1{font-size:24px;color:#f87171}p{color:#94a3b8;font-size:14px}.btn{background:linear-gradient(90deg,#9333ea,#ec4899);color:#fff;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:bold;display:inline-block;margin-top:15px}</style>
     </head>
-    <body><div class="box"><h1>⏳ Payment ${status || 'Pending'}</h1><p>Order ID: <b>${order_id || 'N/A'}</b></p><p>Aapka payment abhi complete nahi hua.</p><a href="/" class="btn">Try Again</a></div></body>
+    <body><div class="box"><h1>⏳ Payment Pending</h1><p>Aapka payment abhi complete nahi hua.</p><a href="/" class="btn">Try Again</a></div></body>
     </html>
   `);
 });
@@ -366,13 +352,12 @@ app.post('/payment-webhook', (req, res) => {
   const body = req.body || {};
   console.log('[webhook] received:', JSON.stringify(body));
   
-  const order_id = body.order_id || body.data?.order_id || body.orderId || '';
+  const order_id = body.order_id || body.data?.order_id || '';
   const parsed = extractPaidStatus(body);
   
   if (order_id && parsed.paid) {
     paidOrders.add(order_id);
     orderStatus.set(order_id, 'paid');
-    console.log(`[webhook] order ${order_id} marked as paid`);
   }
   res.json({ status: 'ok' });
 });
